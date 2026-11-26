@@ -11,7 +11,7 @@
 
 The frontend and backend are exposed through Nginx; the backend port is not published publicly.
 
-## GitHub Secrets
+## GitHub Secret
 
 Configure these repository secrets:
 
