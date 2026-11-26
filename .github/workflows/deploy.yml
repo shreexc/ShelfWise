@@ -91,12 +91,22 @@ jobs:
         env:
           IP: ${{ steps.instance.outputs.ip }}
         run: |
+          SSH_READY=false
           for i in $(seq 1 30); do
-            ssh $SSH_OPTS ec2-user@"$IP" true && break
+            if ssh $SSH_OPTS ec2-user@"$IP" true; then
+              SSH_READY=true
+              break
+            fi
             echo "Waiting for SSH ($i/30)..."
             sleep 10
           done
-          ssh $SSH_OPTS ec2-user@"$IP" 'cloud-init status --wait' || true
+          if [ "$SSH_READY" != true ]; then
+            echo "SSH did not become available on $IP"
+            exit 1
+          fi
+          if ! ssh $SSH_OPTS ec2-user@"$IP" 'cloud-init status --wait'; then
+            echo "::warning::Cloud-init reported an error; checking deployment prerequisites directly."
+          fi
 
       - name: Deploy Docker containers
         env:
@@ -106,6 +116,8 @@ jobs:
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
         run: |
           test -n "$JWT_SECRET" || { echo "JWT_SECRET is not configured"; exit 1; }
+
+          ssh $SSH_OPTS ec2-user@"$IP" 'sudo dnf install -y git && command -v git'
 
           ssh $SSH_OPTS ec2-user@"$IP" << 'EOF'
             set -e
