@@ -1,3 +1,4 @@
+#
 name: Deploy Library System to AWS EC2
 
 on:
@@ -22,6 +23,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Validate Compose and build images
+        env:
+          JWT_SECRET: ci-validation-only-secret
+        run: |
+          docker compose config --quiet
+          docker compose build
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
