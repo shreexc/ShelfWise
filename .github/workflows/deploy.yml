@@ -1,0 +1,158 @@
+name: Deploy Library System to AWS EC2
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency: library-system-deployment
+
+env:
+  AWS_REGION: us-east-1
+  STACK_NAME: library-system-production-stack
+  TEMPLATE: infra/ec2-instance.yaml
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SSH_OPTS: -i ec2-key.pem -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate CloudFormation template
+        run: aws cloudformation validate-template --template-body file://${{ env.TEMPLATE }}
+
+      - name: Provision EC2 stack
+        run: |
+          STATUS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].StackStatus" --output text 2>/dev/null || true)
+
+          INSTANCE_STATE=""
+          if [ -n "$STATUS" ] && [ "$STATUS" != "None" ]; then
+            INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue" --output text 2>/dev/null || true)
+            if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+              INSTANCE_STATE=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query "Reservations[0].Instances[0].State.Name" --output text 2>/dev/null || true)
+            fi
+          fi
+
+          if [ "$STATUS" = "ROLLBACK_COMPLETE" ] || [ "$STATUS" = "CREATE_FAILED" ] || [ "$INSTANCE_STATE" = "terminated" ]; then
+            aws cloudformation delete-stack --stack-name "$STACK_NAME"
+            aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"
+          fi
+
+          aws cloudformation deploy \
+            --stack-name "$STACK_NAME" \
+            --template-file "$TEMPLATE" \
+            --parameter-overrides InstanceType=t3.small \
+            --no-fail-on-empty-changeset || {
+              aws cloudformation describe-stack-events \
+                --stack-name "$STACK_NAME" \
+                --query "StackEvents[?ResourceStatus=='CREATE_FAILED'].[LogicalResourceId,ResourceStatus,ResourceStatusReason]" \
+                --output table
+              exit 1
+            }
+
+      - name: Retrieve EC2 details
+        id: instance
+        run: |
+          INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue" --output text)
+          KEY_ID=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='KeyPairId'].OutputValue" --output text)
+
+          STATE=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query "Reservations[0].Instances[0].State.Name" --output text)
+          if [ "$STATE" = "stopped" ]; then
+            aws ec2 start-instances --instance-ids "$INSTANCE_ID"
+          fi
+          aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+
+          IP=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query "Reservations[0].Instances[0].PublicIpAddress" --output text)
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+          echo "key_id=$KEY_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Get SSH private key
+        run: |
+          aws ssm get-parameter \
+            --name "/ec2/keypair/${{ steps.instance.outputs.key_id }}" \
+            --with-decryption \
+            --query Parameter.Value \
+            --output text > ec2-key.pem
+          chmod 600 ec2-key.pem
+
+      - name: Wait for SSH and Docker bootstrap
+        env:
+          IP: ${{ steps.instance.outputs.ip }}
+        run: |
+          for i in $(seq 1 30); do
+            ssh $SSH_OPTS ec2-user@"$IP" true && break
+            echo "Waiting for SSH ($i/30)..."
+            sleep 10
+          done
+          ssh $SSH_OPTS ec2-user@"$IP" 'cloud-init status --wait' || true
+
+      - name: Deploy Docker containers
+        env:
+          IP: ${{ steps.instance.outputs.ip }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+        run: |
+          test -n "$JWT_SECRET" || { echo "JWT_SECRET is not configured"; exit 1; }
+
+          ssh $SSH_OPTS ec2-user@"$IP" << 'EOF'
+            set -e
+            if [ ! -d "$HOME/Library_System" ]; then
+              cd "$HOME"
+              git clone "https://github.com/${{ github.repository }}.git" Library_System
+            fi
+            cd "$HOME/Library_System"
+            git fetch origin main
+            git reset --hard origin/main
+          EOF
+
+          ssh $SSH_OPTS ec2-user@"$IP" 'cat > /home/ec2-user/Library_System/.env' << ENVEOF
+          PORT=5000
+          NODE_ENV=production
+          CLIENT_URL=*
+          MONGODB_URI=mongodb://mongo:27017/library_system
+          JWT_SECRET=${JWT_SECRET}
+          EMAIL_USER=${EMAIL_USER:-}
+          EMAIL_PASS=${EMAIL_PASS:-}
+          ENVEOF
+
+          ssh $SSH_OPTS ec2-user@"$IP" << 'EOF'
+            set -e
+            cd "$HOME/Library_System"
+            chmod +x aws/deploy.sh
+            ./aws/deploy.sh
+          EOF
+
+      - name: Verify application health
+        env:
+          IP: ${{ steps.instance.outputs.ip }}
+        run: |
+          for i in $(seq 1 30); do
+            if curl --fail --silent --show-error "http://$IP/api/health" >/dev/null; then
+              echo "Library System health check passed"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Library System health check failed"
+          exit 1
+
+      - name: Publish live URL
+        run: |
+          echo "### Library System live at http://${{ steps.instance.outputs.ip }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ec2-key.pem

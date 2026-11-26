@@ -1,0 +1,106 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Library System EC2 instance with Docker on Amazon Linux 2023
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues: [t3.small, t3.medium]
+    Description: EC2 instance size
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+  KeyPair:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: !Sub "${AWS::StackName}-keypair"
+      KeyType: rsa
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${AWS::StackName} - SSH and HTTP"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH access for deployment
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: Public Library System HTTP
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPair
+      SecurityGroupIds:
+        - !GetAtt SecurityGroup.GroupId
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp2
+            VolumeSize: 20
+            DeleteOnTermination: true
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -euo pipefail
+          exec > /var/log/userdata.log 2>&1
+
+          echo "=== Library System bootstrap started at $(date) ==="
+          dnf update -y
+          dnf install -y docker git curl
+
+          systemctl enable docker
+          systemctl start docker
+          usermod -aG docker ec2-user
+
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          curl -fsSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+            -o /usr/local/lib/docker/cli-plugins/docker-compose
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+          BUILDX_TAG=$(curl -fsSI https://github.com/docker/buildx/releases/latest | grep -i '^location:' | sed 's|.*/tag/||' | tr -d '\r\n')
+          BUILDX_TAG="${BUILDX_TAG:-v0.38.1}"
+          curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_TAG}/buildx-${BUILDX_TAG}.linux-amd64" \
+            -o /usr/local/lib/docker/cli-plugins/docker-buildx
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+
+          if ! swapon --show=NAME --noheadings | grep -q .; then
+            fallocate -l 1G /swapfile
+            chmod 600 /swapfile
+            mkswap /swapfile
+            swapon /swapfile
+            echo '/swapfile none swap sw 0 0' >> /etc/fstab
+          fi
+
+          echo "=== Library System bootstrap complete at $(date) ==="
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-instance"
+        - Key: Project
+          Value: Library-System
+
+Outputs:
+  InstanceId:
+    Description: EC2 instance ID
+    Value: !Ref Instance
+  PublicIp:
+    Description: Public IP address
+    Value: !GetAtt Instance.PublicIp
+  KeyPairId:
+    Description: Key pair ID stored in AWS SSM Parameter Store
+    Value: !GetAtt KeyPair.KeyPairId
+  WebsiteURL:
+    Description: Public Library System URL
+    Value: !Sub "http://${Instance.PublicIp}"

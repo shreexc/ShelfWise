@@ -1,0 +1,67 @@
+import express from "express";
+import {
+  applyFine,
+  clearFine,
+  getFineSettings,
+  getIssues,
+  getStudentIssues,
+  issueManualBooks,
+  returnBook,
+  updateFineSetting,
+} from "../controllers/bookController.js";
+import {
+  authenticationToken,
+  authorizeRoles,
+} from "../middleware/authMiddleware.js";
+
+const bookRouter = express.Router();
+bookRouter.get("/fine-settings", authenticationToken, getFineSettings);
+bookRouter.get(
+  "/issues/student",
+  authenticationToken,
+  authorizeRoles("user"),
+  getStudentIssues,
+);
+
+// admin
+
+bookRouter.get(
+  "/issues",
+  authenticationToken,
+  authorizeRoles("admin"),
+  getIssues,
+);
+bookRouter.post(
+  "/issue-manual",
+  authenticationToken,
+  authorizeRoles("admin"),
+  issueManualBooks,
+);
+
+bookRouter.put(
+  "/issues/:id/return",
+  authenticationToken,
+  authorizeRoles("admin"),
+  returnBook,
+);
+bookRouter.put(
+  "/issues/:id/fine",
+  authenticationToken,
+  authorizeRoles("admin"),
+  applyFine,
+);
+
+bookRouter.put(
+  "/issues/:id/clear-fine",
+  authenticationToken,
+  authorizeRoles("admin"),
+  clearFine,
+);
+bookRouter.put(
+  "/fine-settings",
+  authenticationToken,
+  authorizeRoles("admin"),
+  updateFineSetting,
+);
+
+export default bookRouter;

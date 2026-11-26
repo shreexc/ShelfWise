@@ -1,0 +1,18 @@
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies and build output
+node_modules/
+dist/
+frontend/dist/
+
+# Logs and local files
+*.log
+npm-debug.log*
+.DS_Store
+coverage/
+
+# SSH deployment material
+*.pem
