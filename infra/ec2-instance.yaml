@@ -59,7 +59,7 @@ Resources:
           trap 'echo "Bootstrap failed at line ${LINENO}: ${BASH_COMMAND}" >&2' ERR
 
           echo "=== Library System bootstrap started at $(date) ==="
-          dnf install -y docker git curl
+          dnf install -y docker git
 
           systemctl enable --now docker
           usermod -aG docker ec2-user
