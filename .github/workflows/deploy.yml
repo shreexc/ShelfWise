@@ -125,10 +125,33 @@ jobs:
         run: |
           test -n "$JWT_SECRET" || { echo "JWT_SECRET is not configured"; exit 1; }
 
-          ssh $SSH_OPTS ec2-user@"$IP" 'sudo dnf install -y git && command -v git'
+          ssh $SSH_OPTS ec2-user@"$IP" << 'EOF'
+            set -euo pipefail
+            sudo dnf install -y docker git curl
+            sudo systemctl enable --now docker
+            sudo usermod -aG docker ec2-user
+
+            sudo install -d -m 0755 /usr/local/lib/docker/cli-plugins
+            sudo curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL \
+              https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+              -o /usr/local/lib/docker/cli-plugins/docker-compose
+            sudo chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
+
+            BUILDX_TAG=v0.38.1
+            sudo curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL \
+              "https://github.com/docker/buildx/releases/download/${BUILDX_TAG}/buildx-${BUILDX_TAG}.linux-amd64" \
+              -o /usr/local/lib/docker/cli-plugins/docker-buildx
+            sudo chmod 0755 /usr/local/lib/docker/cli-plugins/docker-buildx
+            sudo docker version
+            sudo docker compose version
+            sudo docker buildx version
+          EOF
 
           ssh $SSH_OPTS ec2-user@"$IP" << 'EOF'
             set -e
+            docker info >/dev/null
+            docker compose version
+            docker buildx version
             if [ ! -d "$HOME/Library_System" ]; then
               cd "$HOME"
               git clone "https://github.com/${{ github.repository }}.git" Library_System

@@ -56,23 +56,23 @@ Resources:
           #!/bin/bash
           set -euo pipefail
           exec > /var/log/userdata.log 2>&1
+          trap 'echo "Bootstrap failed at line ${LINENO}: ${BASH_COMMAND}" >&2' ERR
 
           echo "=== Library System bootstrap started at $(date) ==="
-          dnf update -y
           dnf install -y docker git curl
 
-          systemctl enable docker
-          systemctl start docker
+          systemctl enable --now docker
           usermod -aG docker ec2-user
 
           mkdir -p /usr/local/lib/docker/cli-plugins
-          curl -fsSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL \
+            https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
             -o /usr/local/lib/docker/cli-plugins/docker-compose
           chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
-          BUILDX_TAG=$(curl -fsSI https://github.com/docker/buildx/releases/latest | grep -i '^location:' | sed 's|.*/tag/||' | tr -d '\r\n')
-          BUILDX_TAG="${BUILDX_TAG:-v0.38.1}"
-          curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_TAG}/buildx-${BUILDX_TAG}.linux-amd64" \
+          BUILDX_TAG=v0.38.1
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL \
+            "https://github.com/docker/buildx/releases/download/${BUILDX_TAG}/buildx-${BUILDX_TAG}.linux-amd64" \
             -o /usr/local/lib/docker/cli-plugins/docker-buildx
           chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
 
